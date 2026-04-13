@@ -1,0 +1,80 @@
+name: A股尾盘选股推送
+
+on:
+  schedule:
+    - cron: '30 6 * * *'   # 北京时间每天14:30（UTC 6:30）
+  workflow_dispatch:       # 允许手动测试
+
+jobs:
+  run-select:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          pip install akshare pandas requests
+
+      - name: Run tailpan select script
+        env:
+          PUSHPLUS_TOKEN: ${{ secrets.PUSHPLUS_TOKEN }}
+        run: |
+          python - << 'EOF'
+import akshare as ak
+import pandas as pd
+import requests
+from datetime import datetime
+
+PUSHPLUS_TOKEN = "${{ secrets.PUSHPLUS_TOKEN }}"
+
+def send_wechat(title, content):
+    url = "http://www.pushplus.plus/send"
+    data = {
+        "token": PUSHPLUS_TOKEN,
+        "title": title,
+        "content": content,
+        "template": "txt"
+    }
+    try:
+        requests.post(url, json=data, timeout=10)
+    except:
+        pass
+
+now = datetime.now().strftime("%Y-%m-%d %H:%M")
+title = f"【A股尾盘选股 {now}】"
+
+try:
+    df = ak.stock_zh_a_spot_em()
+    
+    # 尾盘选股规则（可随时调整）
+    df = df[
+        (df['涨跌幅'] >= 3.0) & (df['涨跌幅'] <= 5.0) &
+        (df['量比'] > 1.5) &
+        (df['换手率'] >= 5.0) & (df['换手率'] <= 10.0) &
+        (df['总市值'] >= 50 * 100000000) &
+        (df['总市值'] <= 200 * 100000000)
+    ].copy()
+    
+    df = df.sort_values(by='量比', ascending=False)
+    
+    if df.empty:
+        content = "今日无符合尾盘信号的股票\n（大盘弱或无热点，建议空仓等待）"
+    else:
+        content = "符合条件的股票（前8只，按量比排序）:\n\n"
+        for _, row in df.head(8).iterrows():
+            content += f"{row['名称']}（{row['代码']}）\n"
+            content += f"涨幅: {row['涨跌幅']:.2f}% | 量比: {row['量比']:.2f} | 换手: {row['换手率']:.2f}%\n"
+            content += f"最新价: {row['最新价']} | 市值: {row['总市值']/100000000:.1f}亿\n\n"
+    
+    send_wechat(title, content)
+    print("推送成功")
+except Exception as e:
+    send_wechat("【尾盘选股异常】", f"运行出错: {str(e)}")
+EOF
